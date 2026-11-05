@@ -177,23 +177,27 @@ def emoji_bar(frac: float) -> str:
     return fill * filled + "⬛" * (EMOJI_CELLS - filled)
 
 
-def card(t: dict, now: float) -> tuple[str, float]:
-    """타이머 하나 → (필드 내용, 진행률). 제목은 ### 머리글로 크게 쓴다."""
+def card(t: dict, now: float) -> tuple[str, str, float]:
+    """타이머 하나 → (필드 제목, 필드 내용, 진행률). 줄 사이에 빈 줄을 넣어 띄운다."""
     frac, remain, _ = progress(t, now)
     nxt = int(now + remain)
-    bell = " 🔔" if t.get("notify") else ""
-    name = discord.utils.escape_markdown(t["name"])
+    bell = "  🔔" if t.get("notify") else ""
+    title = f"{t['name']}{bell}"
+    gap = f"\n{BLANK}\n"  # 필드 안에서는 ### 머리글이 안 먹어서 빈 줄로 간격을 만든다
     body = (
-        f"### {name}{bell}\n"
-        f"{emoji_bar(frac)}\n"
-        f"⏳ **{fmt_remain(remain)}** 남음 · **{int(frac * 100)}%**\n"  # 내림: 끝나기 전에 100% 로 안 보이게
+        f"{BLANK}\n"  # 제목과 바 사이
+        f"{emoji_bar(frac)}{gap}"
+        f"⏳ **{fmt_remain(remain)}** 남음 · **{int(frac * 100)}%**{gap}"  # 내림: 끝나기 전에 100% 로 안 보이게
         f"🔁 {label_of(t)} · <t:{nxt}:t>"
     )
-    return body, frac
+    return title, body, frac
+
+
+ROWS_PER_EMBED = 8  # 필드 25개 제한: 8줄 = 카드 16 + 줄바꿈 7 = 23개
 
 
 def render(g: dict, now: float) -> list[discord.Embed]:
-    """2열 격자 보드. 한 줄(타이머 2개)을 임베드 하나로 만들어 줄 사이 빈 필드를 없앤다(최대 10줄)."""
+    """2열 격자 보드 하나. 16개(8줄)를 넘을 때만 아래에 임베드를 하나 더 붙인다."""
     timers = g["timers"]
     stamp = datetime.fromtimestamp(now, TZ).strftime("%H:%M:%S")
     footer = f"{len(timers)}/{MAX_TIMERS}개 · {UPDATE_SEC}초마다 갱신 · {stamp}"
@@ -206,19 +210,25 @@ def render(g: dict, now: float) -> list[discord.Embed]:
     cards = [card(t, now) for t in timers]
     soonest = min(range(len(timers)), key=lambda i: progress(timers[i], now)[1])
     s_remain = progress(timers[soonest], now)[1]
+    color = level_color(max(c[2] for c in cards))
 
+    per_embed = COLUMNS * ROWS_PER_EMBED
     embeds = []
-    for i in range(0, len(cards), COLUMNS):
-        row = cards[i:i + COLUMNS]
-        e = discord.Embed(color=level_color(max(f for _, f in row)))
-        if i == 0:
+    for start in range(0, len(cards), per_embed):
+        chunk = cards[start:start + per_embed]
+        e = discord.Embed(color=color)
+        if start == 0:
             e.title = "⏱ 스케줄 타이머"
             name = discord.utils.escape_markdown(timers[soonest]["name"])
             e.description = f"⏭ 다음 차례 **{name}** · <t:{int(now + s_remain)}:R>"
-        for body, _ in row:
-            e.add_field(name=BLANK, value=body, inline=True)
-        for _ in range(COLUMNS - len(row)):  # 홀수 개면 빈 칸으로 2열 유지
-            e.add_field(name=BLANK, value=BLANK, inline=True)
+        for i in range(0, len(chunk), COLUMNS):
+            row = chunk[i:i + COLUMNS]
+            for title, body, _ in row:
+                e.add_field(name=title, value=body, inline=True)
+            for _ in range(COLUMNS - len(row)):  # 홀수 개면 빈 칸으로 2열 유지
+                e.add_field(name=BLANK, value=BLANK, inline=True)
+            if i + COLUMNS < len(chunk):  # 줄바꿈용 빈 필드 → 한 줄에 2개씩, 줄 사이 간격도 된다
+                e.add_field(name=BLANK, value=BLANK, inline=False)
         embeds.append(e)
     embeds[-1].set_footer(text=footer)
     return embeds
