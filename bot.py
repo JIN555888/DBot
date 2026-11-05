@@ -43,7 +43,27 @@ STATE_FILE = BASE / "state.json"
 # git archive(deploy.sh)가 아래 $Format$ 자리를 커밋 해시로 바꾼다(.gitattributes export-subst).
 # 보드 꼬리말에 보여 패치 반영 여부를 확인한다. 따로 파일을 읽지 않으므로 권한 문제로 죽지 않는다.
 _VER = "$Format:%h$"
-VERSION = "dev" if _VER.startswith("$") else _VER
+
+
+def _git_version() -> str:
+    """dishost 가 GitHub 에서 받아 돌리는 경우 .git 에서 커밋 해시를 읽는다."""
+    try:
+        git = BASE / ".git"
+        head = (git / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref: "):
+            return head[:7]
+        ref = head[5:]
+        if (git / ref).exists():
+            return (git / ref).read_text(encoding="utf-8").strip()[:7]
+        for line in (git / "packed-refs").read_text(encoding="utf-8").splitlines():
+            if line.endswith(" " + ref):
+                return line[:7]
+    except Exception:
+        pass
+    return "dev"
+
+
+VERSION = _git_version() if _VER.startswith("$") else _VER
 MIN_PERIOD = 10
 
 # ---------------------------------------------------------------- 시간 파싱/표시
@@ -181,18 +201,37 @@ def emoji_bar(frac: float) -> str:
     return fill * filled + "⬛" * (EMOJI_CELLS - filled)
 
 
+BAR_CELLS = 12
+_PARTIAL = " ▏▎▍▌▋▊▉"  # 1/8 칸 단위로 부드럽게 차오르게
+
+
+def text_bar(frac: float) -> str:
+    units = min(BAR_CELLS * 8, int(frac * BAR_CELLS * 8))
+    full, rem = divmod(units, 8)
+    s = "█" * full + (_PARTIAL[rem] if rem else "")
+    return s + "░" * (BAR_CELLS - len(s))
+
+
+def state_dot(frac: float) -> str:
+    return "🔴" if frac >= END else "🟠" if frac >= NEAR else "🔵"
+
+
 def card(t: dict, now: float) -> tuple[str, str, float]:
-    """타이머 하나 → (필드 제목, 필드 내용, 진행률). 줄 사이에 빈 줄을 넣어 띄운다."""
+    """타이머 하나 → (필드 제목, 필드 내용, 진행률).
+
+    내용을 코드 블록으로 감싸 카드마다 어두운 상자(칸)가 생기게 해서 타이머끼리 구분한다.
+    코드 블록 안에서는 <t:..> 시각 표시가 안 되므로 다음 시각을 글자로 적는다.
+    """
     frac, remain, _ = progress(t, now)
-    nxt = int(now + remain)
+    nxt = datetime.fromtimestamp(now + remain, TZ).strftime("%H:%M")
     bell = "  🔔" if t.get("notify") else ""
-    title = f"{t['name']}{bell}"
-    gap = f"\n{BLANK}\n"  # 필드 안에서는 ### 머리글이 안 먹어서 빈 줄로 간격을 만든다
+    title = f"{state_dot(frac)} {t['name']}{bell}"
     body = (
-        f"{BLANK}\n"  # 제목과 바 사이
-        f"{emoji_bar(frac)}{gap}"
-        f"⏳ **{fmt_remain(remain)}** 남음 · **{int(frac * 100)}%**{gap}"  # 내림: 끝나기 전에 100% 로 안 보이게
-        f"🔁 {label_of(t)} · <t:{nxt}:t>"
+        "```\n"
+        f"{text_bar(frac)} {int(frac * 100):3d}%\n"  # 내림: 끝나기 전에 100% 로 안 보이게
+        f"남음  {fmt_remain(remain)}\n"
+        f"다음  {nxt} · {label_of(t)}\n"
+        "```"
     )
     return title, body, frac
 
