@@ -34,9 +34,11 @@ load_env(BASE / ".env")
 
 TOKEN = os.environ.get("DISCORD_TOKEN", "")
 GUILD_ID = os.environ.get("GUILD_ID", "").strip()          # 지정하면 그 서버에 명령을 즉시 등록
-MAX_TIMERS = max(1, min(int(os.environ.get("MAX_TIMERS", "10")), 25))
+MAX_TIMERS = max(1, min(int(os.environ.get("MAX_TIMERS", "20")), 20))  # 2열 x 10줄
 UPDATE_SEC = max(2, int(os.environ.get("UPDATE_SEC", "5")))  # 보드 수정 주기(초)
-BAR_LEN = max(5, min(int(os.environ.get("BAR_LEN", "20")), 40))
+BAR_LEN = max(6, min(int(os.environ.get("BAR_LEN", "12")), 16))  # 반 칸 너비라 짧게
+COLUMNS = 2
+ROWS_PER_EMBED = 5  # 임베드 하나에 필드 25개 제한 → 5줄(10개)씩 나눈다
 NOTIFY_DELETE_SEC = int(os.environ.get("NOTIFY_DELETE_SEC", "60"))  # 0 이면 알림 메시지를 지우지 않음
 TZ = timezone(timedelta(hours=float(os.environ.get("TZ_HOURS", "9"))))
 STATE_FILE = BASE / "state.json"
@@ -110,17 +112,23 @@ def parse_anchor(text: str | None, now: float) -> tuple[float, tuple[int, int, i
 
 
 def make_label(period: int, hms: tuple[int, int, int] | None, anchor: float) -> str:
+    """반 칸에 들어가게 짧은 일정 설명."""
     if hms is None:
-        start = datetime.fromtimestamp(anchor, TZ).strftime("%H:%M:%S")
-        return f"{fmt_duration(period)}마다 ({start} 시작)"
+        return f"{fmt_duration(period)}마다"
     h, m, s = hms
     if period == 86400:
         return f"매일 {h:02}:{m:02}" + (f":{s:02}" if s else "")
     if period == 3600:
         return "매시 정각" if (m, s) == (0, 0) else f"매시 {m}분" + (f" {s}초" if s else "")
     if 86400 % period == 0 and (h, m, s) == (0, 0, 0):
-        return f"{fmt_duration(period)}마다 (정각 기준)"
-    return f"{fmt_duration(period)}마다 ({h:02}:{m:02} 기준)"
+        return f"{fmt_duration(period)}마다 (정각)"
+    return f"{fmt_duration(period)}마다 ({h:02}:{m:02})"
+
+
+def label_of(t: dict) -> str:
+    if "hms" in t:  # 새 형식. 예전에 만든 타이머는 저장된 label 을 그대로 쓴다
+        return make_label(t["period"], tuple(t["hms"]) if t["hms"] else None, t["anchor"])
+    return t["label"]
 
 
 def progress(t: dict, now: float) -> tuple[float, float, int]:
@@ -131,9 +139,18 @@ def progress(t: dict, now: float) -> tuple[float, float, int]:
     return elapsed / p, p - elapsed, math.floor(d / p)
 
 
+_PARTIAL = " ▏▎▍▌▋▊▉"  # 1/8 칸 단위로 부드럽게 차오르게
+
+
 def bar(frac: float) -> str:
-    filled = min(BAR_LEN, int(frac * BAR_LEN))
-    return "█" * filled + "░" * (BAR_LEN - filled)
+    units = min(BAR_LEN * 8, int(frac * BAR_LEN * 8))
+    full, rem = divmod(units, 8)
+    s = "█" * full + (_PARTIAL[rem] if rem else "")
+    return s + "░" * (BAR_LEN - len(s))
+
+
+def status_dot(frac: float) -> str:
+    return "🔴" if frac >= 0.9 else "🟡" if frac >= 0.7 else "🟢"
 
 
 # ---------------------------------------------------------------- 상태 저장
@@ -157,26 +174,60 @@ def save_state(state: dict) -> None:
 # ---------------------------------------------------------------- 봇
 
 
-def render(g: dict, now: float) -> discord.Embed:
-    blocks = []
-    for t in g["timers"]:
-        frac, remain, _ = progress(t, now)
-        nxt = int(now + remain)
-        icon = "🔥" if frac >= 0.9 else "⏳"
-        bell = " 🔔" if t.get("notify") else ""
-        name = discord.utils.escape_markdown(t["name"])
-        blocks.append(
-            f"{icon} **{name}** · {t['label']}{bell}\n"
-            f"`{bar(frac)} {frac * 100:5.1f}%`  남은 **{fmt_remain(remain)}** · 다음 <t:{nxt}:T>"
-        )
-    embed = discord.Embed(
-        title="⏱ 스케줄 타이머",
-        description="\n\n".join(blocks) or "타이머가 없어요. `/timer add` 로 추가하세요.",
-        color=0x5865F2,
+BLANK = "​"
+
+
+def card(t: dict, now: float) -> tuple[str, str, float]:
+    """타이머 하나 → (필드 제목, 필드 내용, 진행률)."""
+    frac, remain, _ = progress(t, now)
+    nxt = int(now + remain)
+    bell = " 🔔" if t.get("notify") else ""
+    title = f"{status_dot(frac)} {t['name']}{bell}"
+    body = (
+        f"`{bar(frac)}` **{frac * 100:.0f}%**\n"
+        f"⏳ **{fmt_remain(remain)}** 남음\n"
+        f"🔁 {label_of(t)} · <t:{nxt}:t>"
     )
+    return title, body, frac
+
+
+def render(g: dict, now: float) -> list[discord.Embed]:
+    """2열 격자 보드. 필드 25개 제한 때문에 5줄(10개)마다 임베드를 나눈다."""
+    timers = g["timers"]
     stamp = datetime.fromtimestamp(now, TZ).strftime("%H:%M:%S")
-    embed.set_footer(text=f"{len(g['timers'])}/{MAX_TIMERS}개 · {UPDATE_SEC}초마다 갱신 · 마지막 {stamp}")
-    return embed
+    footer = f"{len(timers)}/{MAX_TIMERS}개 · {UPDATE_SEC}초마다 갱신 · {stamp}"
+    if not timers:
+        e = discord.Embed(title="⏱ 스케줄 타이머", color=0x5865F2,
+                          description="타이머가 없어요. `/timer add` 로 추가하세요.")
+        e.set_footer(text=footer)
+        return [e]
+
+    cards = [card(t, now) for t in timers]
+    soonest = min(range(len(timers)), key=lambda i: progress(timers[i], now)[1])
+    s_remain = progress(timers[soonest], now)[1]
+    top = max(c[2] for c in cards)
+    color = 0xED4245 if top >= 0.9 else 0xFEE75C if top >= 0.7 else 0x57F287
+
+    per_embed = COLUMNS * ROWS_PER_EMBED
+    embeds = []
+    for start in range(0, len(cards), per_embed):
+        chunk = cards[start:start + per_embed]
+        e = discord.Embed(color=color)
+        if start == 0:
+            e.title = "⏱ 스케줄 타이머"
+            name = discord.utils.escape_markdown(timers[soonest]["name"])
+            e.description = f"⏭ 다음 차례 **{name}** · <t:{int(now + s_remain)}:R>"
+        for i in range(0, len(chunk), COLUMNS):
+            row = chunk[i:i + COLUMNS]
+            for title, body, _ in row:
+                e.add_field(name=title, value=body, inline=True)
+            for _ in range(COLUMNS - len(row)):  # 홀수 개면 빈 칸으로 2열 유지
+                e.add_field(name=BLANK, value=BLANK, inline=True)
+            if i + COLUMNS < len(chunk):  # 줄바꿈용 빈 필드 → 한 줄에 2개씩
+                e.add_field(name=BLANK, value=BLANK, inline=False)
+        embeds.append(e)
+    embeds[-1].set_footer(text=footer)
+    return embeds
 
 
 class TimerBot(discord.Client):
@@ -216,7 +267,7 @@ class TimerBot(discord.Client):
         try:
             if channel is None:
                 channel = await self.fetch_channel(b["channel_id"])
-            await channel.get_partial_message(b["message_id"]).edit(embed=render(g, time.time()))
+            await channel.get_partial_message(b["message_id"]).edit(embeds=render(g, time.time()))
         except discord.NotFound:
             print(f"[warn] 서버 {gid} 보드 메시지가 사라짐 → 보드 해제")
             g["board"] = None
@@ -234,7 +285,7 @@ class TimerBot(discord.Client):
             return
         try:
             await channel.send(
-                f"⏰ **{discord.utils.escape_markdown(t['name'])}** — {t['label']}",
+                f"⏰ **{discord.utils.escape_markdown(t['name'])}** — {label_of(t)}",
                 delete_after=NOTIFY_DELETE_SEC or None,
             )
         except discord.HTTPException as e:
@@ -301,7 +352,7 @@ async def add_cmd(interaction: discord.Interaction, name: app_commands.Range[str
     except ValueError as e:
         return await interaction.response.send_message(str(e), ephemeral=True)
     t = {"name": name, "period": period, "anchor": anchor, "label": make_label(period, hms, anchor),
-         "notify": notify, "channel_id": interaction.channel_id}
+         "hms": list(hms) if hms else None, "notify": notify, "channel_id": interaction.channel_id}
     g["timers"].append(t)
     bot.last_cycle[(str(interaction.guild_id), name)] = progress(t, now)[2]
     save_state(bot.state)
@@ -334,6 +385,7 @@ async def reset_cmd(interaction: discord.Interaction, name: str):
     now = time.time()
     t["anchor"] = now
     t["label"] = make_label(t["period"], None, now)
+    t["hms"] = None
     bot.last_cycle[(str(interaction.guild_id), name)] = 0
     save_state(bot.state)
     await interaction.response.send_message(f"리셋: **{name}** · {t['label']}", ephemeral=True)
@@ -343,7 +395,7 @@ async def reset_cmd(interaction: discord.Interaction, name: str):
 @timer_group.command(name="list", description="타이머 목록 (나만 보기)")
 async def list_cmd(interaction: discord.Interaction):
     g = bot.guild(interaction.guild_id)
-    await interaction.response.send_message(embed=render(g, time.time()), ephemeral=True)
+    await interaction.response.send_message(embeds=render(g, time.time()), ephemeral=True)
 
 
 @timer_group.command(name="board", description="이 채널에 보드(계속 갱신되는 메시지)를 띄움")
@@ -352,7 +404,7 @@ async def board_cmd(interaction: discord.Interaction):
     g = bot.guild(interaction.guild_id)
     old = g.get("board")
     try:
-        msg = await interaction.channel.send(embed=render(g, time.time()))
+        msg = await interaction.channel.send(embeds=render(g, time.time()))
     except discord.HTTPException as e:
         return await interaction.followup.send(f"이 채널에 메시지를 못 올려요(권한 확인): {e}", ephemeral=True)
     g["board"] = {"channel_id": msg.channel.id, "message_id": msg.id}
