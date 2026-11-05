@@ -13,6 +13,7 @@ case "$OUT" in ""|/|"$HOME"|"$REPO") echo "[deploy] 위험한 DEPLOY_DIR: $OUT";
 mkdir -p "$OUT"
 find "$OUT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 git -C "$REPO" archive HEAD -- bot.py requirements.txt | tar -x -C "$OUT"
+git -C "$REPO" rev-parse --short HEAD > "$OUT/version.txt"   # 보드 꼬리말 v<해시>
 echo "[deploy] $(git -C "$REPO" log --oneline -1) → $OUT"
 ls "$OUT"
 

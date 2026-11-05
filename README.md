@@ -47,6 +47,7 @@ venv 가 없으면 먼저 `python -m venv .venv` 와 `.\.venv\Scripts\pip instal
 | `/timer add name every [at] [notify]` | 타이머를 추가한다 (최대 `MAX_TIMERS` 개) |
 | `/timer remove name` | 타이머를 삭제한다 |
 | `/timer reset name` | 타이머를 지금부터 다시 시작한다 |
+| `/timer refresh` | 보드를 지금 다시 그린다. 패치 후 모양·버튼을 바로 반영할 때 쓴다 |
 | `/timer list` | 목록을 나만 보이게 띄운다 |
 
 `every` 는 주기다: `30m`, `1h`, `1h30m`, `90s`, `1d`, `2시간`, `45`(분 단위). 최소 10초.
@@ -75,3 +76,7 @@ venv 가 없으면 먼저 `python -m venv .venv` 와 `.\.venv\Scripts\pip instal
 최대 개수(20개, 2열 x 10줄)와 바 길이(12칸)는 코드에 고정돼 있다.
 
 타이머와 보드 위치는 `state.json` 에 저장한다. 봇을 다시 켜도 같은 메시지를 이어서 수정한다.
+
+## 배포 (dishost)
+
+`bash deploy.sh` — 커밋된 `bot.py`·`requirements.txt` 만 올리고 재시작한다. 서버의 `state.json`·`.env` 는 그대로 둔다. 보드 꼬리말의 `v<해시>` 로 반영된 버전을 확인한다. 처음 한 번 `dishost login` 이 필요하다.

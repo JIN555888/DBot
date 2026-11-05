@@ -40,6 +40,8 @@ COLUMNS = 2
 NOTIFY_DELETE_SEC = int(os.environ.get("NOTIFY_DELETE_SEC", "60"))  # 0 이면 알림 메시지를 지우지 않음
 TZ = timezone(timedelta(hours=float(os.environ.get("TZ_HOURS", "9"))))
 STATE_FILE = BASE / "state.json"
+_VER_FILE = BASE / "version.txt"  # deploy.sh 가 커밋 해시를 적는다 → 보드 꼬리말에 보여 패치 반영 여부를 확인
+VERSION = _VER_FILE.read_text(encoding="utf-8").strip() if _VER_FILE.exists() else "dev"
 MIN_PERIOD = 10
 
 # ---------------------------------------------------------------- 시간 파싱/표시
@@ -200,7 +202,7 @@ def render(g: dict, now: float) -> list[discord.Embed]:
     """2열 격자 보드 하나. 16개(8줄)를 넘을 때만 아래에 임베드를 하나 더 붙인다."""
     timers = g["timers"]
     stamp = datetime.fromtimestamp(now, TZ).strftime("%H:%M:%S")
-    footer = f"{len(timers)}/{MAX_TIMERS}개 · {UPDATE_SEC}초마다 갱신 · {stamp}"
+    footer = f"{len(timers)}/{MAX_TIMERS}개 · {UPDATE_SEC}초마다 갱신 · {stamp} · v{VERSION}"
     if not timers:
         e = discord.Embed(title="⏱ 스케줄 타이머", color=0x5865F2,
                           description="타이머가 없어요. 아래 **➕ 타이머 추가** 를 누르세요.")
@@ -544,6 +546,17 @@ async def reset_cmd(interaction: discord.Interaction, name: str):
     bot.dirty.add(gid)
     save_state(bot.state)
     await reply_and_refresh(interaction, f"리셋: **{name}** · {label_of(t)}")
+
+
+@timer_group.command(name="refresh", description="보드를 지금 다시 그림 (패치 후 모양·버튼 반영)")
+async def refresh_cmd(interaction: discord.Interaction):
+    gid = str(interaction.guild_id)
+    if not bot.guild(interaction.guild_id).get("board"):
+        return await interaction.response.send_message(
+            "보드가 없어요. `/timer board` 로 이 채널에 띄우세요.", ephemeral=True)
+    bot.dirty.add(gid)  # 버튼·메뉴까지 새 코드로 다시 붙인다
+    await interaction.response.send_message(f"보드를 다시 그렸어요 (v{VERSION}).", ephemeral=True, delete_after=5)
+    await bot.refresh_board(gid)
 
 
 @timer_group.command(name="list", description="타이머 목록 (나만 보기)")
