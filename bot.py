@@ -183,10 +183,11 @@ def card(t: dict, now: float) -> tuple[str, str, float]:
     nxt = int(now + remain)
     bell = " 🔔" if t.get("notify") else ""
     title = f"{status_dot(frac)} {t['name']}{bell}"
+    # 제목 바로 밑에 일정 줄을 두어 제목과 진행 바·퍼센트 사이를 띄운다
     body = (
-        f"`{bar(frac)}` **{frac * 100:.0f}%**\n"
-        f"⏳ **{fmt_remain(remain)}** 남음\n"
-        f"🔁 {label_of(t)} · <t:{nxt}:t>"
+        f"🔁 {label_of(t)} · <t:{nxt}:t>\n"
+        f"`{bar(frac)} {frac * 100:3.0f}%`\n"
+        f"⏳ **{fmt_remain(remain)}** 남음"
     )
     return title, body, frac
 
