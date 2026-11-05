@@ -36,7 +36,6 @@ TOKEN = os.environ.get("DISCORD_TOKEN", "")
 GUILD_ID = os.environ.get("GUILD_ID", "").strip()          # 지정하면 그 서버에 명령을 즉시 등록
 MAX_TIMERS = 20  # 2열 x 10줄 고정 (환경변수로 바꾸지 않음)
 UPDATE_SEC = max(2, int(os.environ.get("UPDATE_SEC", "5")))  # 보드 수정 주기(초)
-BAR_LEN = 12  # 반 칸 너비에 맞춘 길이 고정
 COLUMNS = 2
 ROWS_PER_EMBED = 5  # 임베드 하나에 필드 25개 제한 → 5줄(10개)씩 나눈다
 NOTIFY_DELETE_SEC = int(os.environ.get("NOTIFY_DELETE_SEC", "60"))  # 0 이면 알림 메시지를 지우지 않음
@@ -139,20 +138,6 @@ def progress(t: dict, now: float) -> tuple[float, float, int]:
     return elapsed / p, p - elapsed, math.floor(d / p)
 
 
-_PARTIAL = " ▏▎▍▌▋▊▉"  # 1/8 칸 단위로 부드럽게 차오르게
-
-
-def bar(frac: float) -> str:
-    units = min(BAR_LEN * 8, int(frac * BAR_LEN * 8))
-    full, rem = divmod(units, 8)
-    s = "█" * full + (_PARTIAL[rem] if rem else "")
-    return s + "░" * (BAR_LEN - len(s))
-
-
-def status_dot(frac: float) -> str:
-    return "🔴" if frac >= 0.9 else "🟡" if frac >= 0.7 else "🟢"
-
-
 # ---------------------------------------------------------------- 상태 저장
 
 
@@ -171,23 +156,30 @@ def save_state(state: dict) -> None:
     tmp.replace(STATE_FILE)
 
 
-# ---------------------------------------------------------------- 봇
+# ---------------------------------------------------------------- 보드 그리기
 
 
 BLANK = "​"
+EMOJI_CELLS = 10  # 이모지 한 칸 ≈ 20px, 반 칸(약 230px)에 10칸이 들어간다
+
+
+def emoji_bar(frac: float) -> str:
+    """진행률에 따라 색이 바뀌는 이모지 바: 🟩(~70%) → 🟨(~90%) → 🟥."""
+    filled = min(EMOJI_CELLS, int(frac * EMOJI_CELLS))
+    fill = "🟥" if frac >= 0.9 else "🟨" if frac >= 0.7 else "🟩"
+    return fill * filled + "⬛" * (EMOJI_CELLS - filled)
 
 
 def card(t: dict, now: float) -> tuple[str, str, float]:
     """타이머 하나 → (필드 제목, 필드 내용, 진행률)."""
     frac, remain, _ = progress(t, now)
     nxt = int(now + remain)
-    bell = " 🔔" if t.get("notify") else ""
-    title = f"{status_dot(frac)} {t['name']}{bell}"
-    # 제목 바로 밑에 일정 줄을 두어 제목과 진행 바·퍼센트 사이를 띄운다
+    bell = "  🔔" if t.get("notify") else ""
+    title = f"{t['name']}{bell}"
     body = (
-        f"🔁 {label_of(t)} · <t:{nxt}:t>\n"
-        f"`{bar(frac)} {int(frac * 100):3d}%`\n"  # 내림: 끝나기 전에 100% 로 보이지 않게
-        f"⏳ **{fmt_remain(remain)}** 남음"
+        f"{emoji_bar(frac)}\n"
+        f"⏳ **{fmt_remain(remain)}** 남음 · **{int(frac * 100)}%**\n"  # 내림: 끝나기 전에 100% 로 안 보이게
+        f"🔁 {label_of(t)} · <t:{nxt}:t>"
     )
     return title, body, frac
 
@@ -199,7 +191,7 @@ def render(g: dict, now: float) -> list[discord.Embed]:
     footer = f"{len(timers)}/{MAX_TIMERS}개 · {UPDATE_SEC}초마다 갱신 · {stamp}"
     if not timers:
         e = discord.Embed(title="⏱ 스케줄 타이머", color=0x5865F2,
-                          description="타이머가 없어요. `/timer add` 로 추가하세요.")
+                          description="타이머가 없어요. 아래 **➕ 타이머 추가** 를 누르세요.")
         e.set_footer(text=footer)
         return [e]
 
@@ -217,7 +209,7 @@ def render(g: dict, now: float) -> list[discord.Embed]:
         if start == 0:
             e.title = "⏱ 스케줄 타이머"
             name = discord.utils.escape_markdown(timers[soonest]["name"])
-            e.description = f"⏭ 다음 차례 **{name}** · <t:{int(now + s_remain)}:R>"
+            e.description = f"⏭ 다음 차례 **{name}** · <t:{int(now + s_remain)}:R>\n{BLANK}"
         for i in range(0, len(chunk), COLUMNS):
             row = chunk[i:i + COLUMNS]
             for title, body, _ in row:
@@ -231,12 +223,177 @@ def render(g: dict, now: float) -> list[discord.Embed]:
     return embeds
 
 
+# ---------------------------------------------------------------- 타이머 만들기/고치기 공통
+
+
+def find(g: dict, name: str) -> dict | None:
+    return next((t for t in g["timers"] if t["name"] == name), None)
+
+
+def every_text(period: int) -> str:
+    """초 → 입력창에 미리 채울 주기 문자열(1h30m)."""
+    out = ""
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1)):
+        n, period = divmod(period, size)
+        if n:
+            out += f"{n}{unit}"
+    return out or "0s"
+
+
+def at_text(t: dict) -> str:
+    """타이머 → 입력창에 미리 채울 기준 시각 문자열."""
+    hms = t.get("hms")
+    if not hms:
+        return ""
+    h, m, s = hms
+    if (h, m, s) == (0, 0, 0):
+        return "정각"
+    if t["period"] <= 3600 and h == 0 and s == 0:
+        return f":{m:02}"
+    return f"{h:02}:{m:02}" + (f":{s:02}" if s else "")
+
+
+def parse_notify(text: str | None) -> bool:
+    return (text or "").strip().lower() in ("켬", "켜기", "on", "y", "yes", "1", "true", "예")
+
+
+def upsert_timer(gid: str, channel_id: int, name: str, every: str, at: str | None,
+                 notify: bool, original: str | None = None) -> dict:
+    """타이머를 추가(original=None)하거나 고친다. 잘못된 입력은 ValueError."""
+    g = bot.guild(int(gid))
+    name = name.strip()
+    if not name:
+        raise ValueError("이름을 넣어 주세요.")
+    old = find(g, original) if original else None
+    if original and not old:
+        raise ValueError(f"`{original}` 가 이미 없어요.")
+    if name != original and find(g, name):
+        raise ValueError(f"`{name}` 이미 있어요.")
+    if not old and len(g["timers"]) >= MAX_TIMERS:
+        raise ValueError(f"최대 {MAX_TIMERS}개까지예요. 하나 지우고 추가하세요.")
+    now = time.time()
+    period = parse_duration(every)
+    if period < MIN_PERIOD:
+        raise ValueError(f"주기는 {MIN_PERIOD}초 이상이어야 해요.")
+    keep_running = bool(old) and not (at or "").strip() and not old.get("hms") and old["period"] == period
+    if keep_running:  # 주기·기준이 그대로면 진행 중인 바를 이어 간다
+        anchor, hms = old["anchor"], None
+    else:
+        anchor, hms = parse_anchor(at, now)
+    t = {"name": name, "period": period, "anchor": anchor, "label": make_label(period, hms, anchor),
+         "hms": list(hms) if hms else None, "notify": notify,
+         "channel_id": old.get("channel_id", channel_id) if old else channel_id}
+    if old:
+        g["timers"][g["timers"].index(old)] = t
+        bot.last_cycle.pop((gid, original), None)
+    else:
+        g["timers"].append(t)
+    bot.last_cycle[(gid, name)] = progress(t, now)[2]
+    bot.dirty.add(gid)
+    save_state(bot.state)
+    return t
+
+
+def delete_timer(gid: str, name: str) -> bool:
+    g = bot.guild(int(gid))
+    t = find(g, name)
+    if not t:
+        return False
+    g["timers"].remove(t)
+    bot.last_cycle.pop((gid, name), None)
+    bot.dirty.add(gid)
+    save_state(bot.state)
+    return True
+
+
+# ---------------------------------------------------------------- 보드 아래 버튼·메뉴·입력창
+
+
+class TimerModal(discord.ui.Modal):
+    def __init__(self, gid: str, original: str | None = None) -> None:
+        super().__init__(title="타이머 수정" if original else "타이머 추가", timeout=600)
+        self.gid, self.original = gid, original
+        t = find(bot.guild(int(gid)), original) if original else None
+        self.name_in = discord.ui.TextInput(label="이름", max_length=32,
+                                            default=t["name"] if t else None, placeholder="예: 회의")
+        self.every_in = discord.ui.TextInput(label="주기", max_length=20,
+                                             default=every_text(t["period"]) if t else None,
+                                             placeholder="30m, 1h, 1h30m, 90s, 1d, 2시간")
+        self.at_in = discord.ui.TextInput(label="기준 시각 (비우면 지금부터)", required=False, max_length=10,
+                                          default=(at_text(t) or None) if t else None,
+                                          placeholder="정각 / :30 / 09:00")
+        self.notify_in = discord.ui.TextInput(label="알림 (켬 / 끔)", required=False, max_length=4,
+                                              default=("켬" if t.get("notify") else "끔") if t else "끔")
+        for item in (self.name_in, self.every_in, self.at_in, self.notify_in):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            t = upsert_timer(self.gid, interaction.channel_id, self.name_in.value, self.every_in.value,
+                             self.at_in.value, parse_notify(self.notify_in.value), self.original)
+        except ValueError as e:
+            return await interaction.response.send_message(str(e), ephemeral=True)
+        verb = "수정" if self.original else "추가"
+        await interaction.response.send_message(f"{verb}: **{t['name']}** · {label_of(t)}",
+                                                ephemeral=True, delete_after=5)
+        await bot.refresh_board(self.gid)
+
+
+def _placeholder_opts() -> list[discord.SelectOption]:
+    return [discord.SelectOption(label="타이머 없음", value="_none")]
+
+
+class BoardView(discord.ui.View):
+    """보드 메시지에 붙는 버튼·메뉴. custom_id 고정 → 봇을 다시 켜도 동작한다."""
+
+    def __init__(self, timers: list[dict] | None = None) -> None:
+        super().__init__(timeout=None)
+        opts = [discord.SelectOption(label=t["name"][:100], value=t["name"][:100],
+                                     description=label_of(t)[:100]) for t in (timers or [])[:25]]
+        for sel in (self.edit_sel, self.del_sel):
+            sel.options = opts or _placeholder_opts()
+            sel.disabled = not opts
+
+    @discord.ui.button(label="타이머 추가", emoji="➕", style=discord.ButtonStyle.success,
+                       custom_id="dbot:add", row=0)
+    async def add_btn(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if len(bot.guild(interaction.guild_id)["timers"]) >= MAX_TIMERS:
+            return await interaction.response.send_message(
+                f"최대 {MAX_TIMERS}개까지예요. 하나 지우고 추가하세요.", ephemeral=True)
+        await interaction.response.send_modal(TimerModal(str(interaction.guild_id)))
+
+    @discord.ui.select(custom_id="dbot:edit", placeholder="✏️ 수정할 타이머 (이름·시간 바꾸기)",
+                       options=_placeholder_opts(), row=1)
+    async def edit_sel(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
+        gid = str(interaction.guild_id)
+        bot.dirty.add(gid)  # 다음 갱신 때 메뉴에 남은 선택 표시를 지운다
+        name = select.values[0]
+        if not find(bot.guild(interaction.guild_id), name):
+            return await interaction.response.send_message(f"`{name}` 가 이미 없어요.", ephemeral=True)
+        await interaction.response.send_modal(TimerModal(gid, original=name))
+
+    @discord.ui.select(custom_id="dbot:del", placeholder="🗑️ 삭제할 타이머",
+                       options=_placeholder_opts(), row=2)
+    async def del_sel(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
+        gid = str(interaction.guild_id)
+        name = select.values[0]
+        bot.dirty.add(gid)
+        ok = delete_timer(gid, name)
+        await interaction.response.send_message(f"삭제: **{name}**" if ok else f"`{name}` 가 이미 없어요.",
+                                                ephemeral=True, delete_after=5)
+        await bot.refresh_board(gid)
+
+
+# ---------------------------------------------------------------- 봇
+
+
 class TimerBot(discord.Client):
     def __init__(self) -> None:
         super().__init__(intents=discord.Intents.default())
         self.tree = app_commands.CommandTree(self)
         self.state = load_state()
         self.last_cycle: dict[tuple[str, str], int] = {}
+        self.dirty: set[str] = set(self.state["guilds"])  # 버튼·메뉴를 다시 붙여야 하는 서버
         self.tick_count = 0
 
     def guild(self, gid: int) -> dict:
@@ -244,6 +401,7 @@ class TimerBot(discord.Client):
 
     async def setup_hook(self) -> None:
         self.tree.add_command(timer_group)
+        self.add_view(BoardView())  # 재시작 전에 올린 보드의 버튼·메뉴도 받는다
         if GUILD_ID:
             g = discord.Object(id=int(GUILD_ID))
             self.tree.copy_global_to(guild=g)
@@ -265,10 +423,15 @@ class TimerBot(discord.Client):
             return
         b = g["board"]
         channel = self.get_channel(b["channel_id"])
+        # 메뉴는 타이머 목록이 바뀔 때만 다시 붙인다(매번 붙이면 열어 둔 메뉴가 닫힌다)
+        with_view = gid in self.dirty
+        kwargs = {"view": BoardView(g["timers"])} if with_view else {}
         try:
             if channel is None:
                 channel = await self.fetch_channel(b["channel_id"])
-            await channel.get_partial_message(b["message_id"]).edit(embeds=render(g, time.time()))
+            await channel.get_partial_message(b["message_id"]).edit(embeds=render(g, time.time()), **kwargs)
+            if with_view:
+                self.dirty.discard(gid)
         except discord.NotFound:
             print(f"[warn] 서버 {gid} 보드 메시지가 사라짐 → 보드 해제")
             g["board"] = None
@@ -319,14 +482,15 @@ bot = TimerBot()
 timer_group = app_commands.Group(name="timer", description="스케줄 타이머", guild_only=True)
 
 
-def find(g: dict, name: str) -> dict | None:
-    return next((t for t in g["timers"] if t["name"] == name), None)
-
-
 async def name_autocomplete(interaction: discord.Interaction, current: str):
     g = bot.guild(interaction.guild_id)
     return [app_commands.Choice(name=t["name"], value=t["name"])
             for t in g["timers"] if current.lower() in t["name"].lower()][:25]
+
+
+async def reply_and_refresh(interaction: discord.Interaction, text: str) -> None:
+    await interaction.response.send_message(text, ephemeral=True)
+    await bot.refresh_board(str(interaction.guild_id))
 
 
 @timer_group.command(name="add", description="타이머 추가")
@@ -338,59 +502,37 @@ async def name_autocomplete(interaction: discord.Interaction, current: str):
 )
 async def add_cmd(interaction: discord.Interaction, name: app_commands.Range[str, 1, 32],
                   every: str, at: str | None = None, notify: bool = False):
-    g = bot.guild(interaction.guild_id)
-    if find(g, name):
-        return await interaction.response.send_message(f"`{name}` 이미 있어요.", ephemeral=True)
-    if len(g["timers"]) >= MAX_TIMERS:
-        return await interaction.response.send_message(
-            f"최대 {MAX_TIMERS}개까지예요. `/timer remove` 로 지우고 추가하세요.", ephemeral=True)
-    now = time.time()
     try:
-        period = parse_duration(every)
-        if period < MIN_PERIOD:
-            raise ValueError(f"주기는 {MIN_PERIOD}초 이상이어야 해요.")
-        anchor, hms = parse_anchor(at, now)
+        t = upsert_timer(str(interaction.guild_id), interaction.channel_id, name, every, at, notify)
     except ValueError as e:
         return await interaction.response.send_message(str(e), ephemeral=True)
-    t = {"name": name, "period": period, "anchor": anchor, "label": make_label(period, hms, anchor),
-         "hms": list(hms) if hms else None, "notify": notify, "channel_id": interaction.channel_id}
-    g["timers"].append(t)
-    bot.last_cycle[(str(interaction.guild_id), name)] = progress(t, now)[2]
-    save_state(bot.state)
-    hint = "" if g.get("board") else "\n보드가 없어요. `/timer board` 로 이 채널에 띄우세요."
-    await interaction.response.send_message(f"추가: **{name}** · {t['label']}{hint}", ephemeral=True)
-    await bot.refresh_board(str(interaction.guild_id))
+    has_board = bot.guild(interaction.guild_id).get("board")
+    hint = "" if has_board else "\n보드가 없어요. `/timer board` 로 이 채널에 띄우세요."
+    await reply_and_refresh(interaction, f"추가: **{t['name']}** · {label_of(t)}{hint}")
 
 
 @timer_group.command(name="remove", description="타이머 삭제")
 @app_commands.autocomplete(name=name_autocomplete)
 async def remove_cmd(interaction: discord.Interaction, name: str):
-    g = bot.guild(interaction.guild_id)
-    t = find(g, name)
-    if not t:
-        return await interaction.response.send_message(f"`{name}` 없어요.", ephemeral=True)
-    g["timers"].remove(t)
-    bot.last_cycle.pop((str(interaction.guild_id), name), None)
-    save_state(bot.state)
-    await interaction.response.send_message(f"삭제: **{name}**", ephemeral=True)
-    await bot.refresh_board(str(interaction.guild_id))
+    ok = delete_timer(str(interaction.guild_id), name)
+    await reply_and_refresh(interaction, f"삭제: **{name}**" if ok else f"`{name}` 없어요.")
 
 
 @timer_group.command(name="reset", description="타이머를 지금부터 다시 시작")
 @app_commands.autocomplete(name=name_autocomplete)
 async def reset_cmd(interaction: discord.Interaction, name: str):
-    g = bot.guild(interaction.guild_id)
-    t = find(g, name)
+    gid = str(interaction.guild_id)
+    t = find(bot.guild(interaction.guild_id), name)
     if not t:
         return await interaction.response.send_message(f"`{name}` 없어요.", ephemeral=True)
     now = time.time()
     t["anchor"] = now
     t["label"] = make_label(t["period"], None, now)
     t["hms"] = None
-    bot.last_cycle[(str(interaction.guild_id), name)] = 0
+    bot.last_cycle[(gid, name)] = 0
+    bot.dirty.add(gid)
     save_state(bot.state)
-    await interaction.response.send_message(f"리셋: **{name}** · {t['label']}", ephemeral=True)
-    await bot.refresh_board(str(interaction.guild_id))
+    await reply_and_refresh(interaction, f"리셋: **{name}** · {label_of(t)}")
 
 
 @timer_group.command(name="list", description="타이머 목록 (나만 보기)")
@@ -405,7 +547,7 @@ async def board_cmd(interaction: discord.Interaction):
     g = bot.guild(interaction.guild_id)
     old = g.get("board")
     try:
-        msg = await interaction.channel.send(embeds=render(g, time.time()))
+        msg = await interaction.channel.send(embeds=render(g, time.time()), view=BoardView(g["timers"]))
     except discord.HTTPException as e:
         return await interaction.followup.send(f"이 채널에 메시지를 못 올려요(권한 확인): {e}", ephemeral=True)
     g["board"] = {"channel_id": msg.channel.id, "message_id": msg.id}
