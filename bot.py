@@ -186,7 +186,7 @@ def card(t: dict, now: float) -> tuple[str, str, float]:
     # 제목 바로 밑에 일정 줄을 두어 제목과 진행 바·퍼센트 사이를 띄운다
     body = (
         f"🔁 {label_of(t)} · <t:{nxt}:t>\n"
-        f"`{bar(frac)} {frac * 100:3.0f}%`\n"
+        f"`{bar(frac)} {int(frac * 100):3d}%`\n"  # 내림: 끝나기 전에 100% 로 보이지 않게
         f"⏳ **{fmt_remain(remain)}** 남음"
     )
     return title, body, frac
