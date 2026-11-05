@@ -34,9 +34,9 @@ load_env(BASE / ".env")
 
 TOKEN = os.environ.get("DISCORD_TOKEN", "")
 GUILD_ID = os.environ.get("GUILD_ID", "").strip()          # 지정하면 그 서버에 명령을 즉시 등록
-MAX_TIMERS = max(1, min(int(os.environ.get("MAX_TIMERS", "20")), 20))  # 2열 x 10줄
+MAX_TIMERS = 20  # 2열 x 10줄 고정 (환경변수로 바꾸지 않음)
 UPDATE_SEC = max(2, int(os.environ.get("UPDATE_SEC", "5")))  # 보드 수정 주기(초)
-BAR_LEN = max(6, min(int(os.environ.get("BAR_LEN", "12")), 16))  # 반 칸 너비라 짧게
+BAR_LEN = 12  # 반 칸 너비에 맞춘 길이 고정
 COLUMNS = 2
 ROWS_PER_EMBED = 5  # 임베드 하나에 필드 25개 제한 → 5줄(10개)씩 나눈다
 NOTIFY_DELETE_SEC = int(os.environ.get("NOTIFY_DELETE_SEC", "60"))  # 0 이면 알림 메시지를 지우지 않음
