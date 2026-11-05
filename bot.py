@@ -37,7 +37,6 @@ GUILD_ID = os.environ.get("GUILD_ID", "").strip()          # 지정하면 그 �
 MAX_TIMERS = 20  # 2열 x 10줄 고정 (환경변수로 바꾸지 않음)
 UPDATE_SEC = max(2, int(os.environ.get("UPDATE_SEC", "5")))  # 보드 수정 주기(초)
 COLUMNS = 2
-ROWS_PER_EMBED = 5  # 임베드 하나에 필드 25개 제한 → 5줄(10개)씩 나눈다
 NOTIFY_DELETE_SEC = int(os.environ.get("NOTIFY_DELETE_SEC", "60"))  # 0 이면 알림 메시지를 지우지 않음
 TZ = timezone(timedelta(hours=float(os.environ.get("TZ_HOURS", "9"))))
 STATE_FILE = BASE / "state.json"
@@ -127,6 +126,8 @@ def make_label(period: int, hms: tuple[int, int, int] | None, anchor: float) -> 
 def label_of(t: dict) -> str:
     if "hms" in t:  # 새 형식. 예전에 만든 타이머는 저장된 label 을 그대로 쓴다
         return make_label(t["period"], tuple(t["hms"]) if t["hms"] else None, t["anchor"])
+    if "시작)" in t.get("label", ""):  # 예전 형식 '1분마다 (11:45:55 시작)' → 시작 시각은 빼고 보여 준다
+        return make_label(t["period"], None, t["anchor"])
     return t["label"]
 
 
@@ -159,33 +160,40 @@ def save_state(state: dict) -> None:
 # ---------------------------------------------------------------- 보드 그리기
 
 
-BLANK = "​"
+BLANK = "\u200b"
 EMOJI_CELLS = 10  # 이모지 한 칸 ≈ 20px, 반 칸(약 230px)에 10칸이 들어간다
+NEAR, END = 0.75, 0.9  # 이 진행률부터 주황, 빨강
+
+
+def level_color(frac: float) -> int:
+    """줄(임베드) 왼쪽 띠 색: 파랑 → 주황 → 빨강."""
+    return 0xED4245 if frac >= END else 0xF0B232 if frac >= NEAR else 0x5865F2
 
 
 def emoji_bar(frac: float) -> str:
-    """진행률에 따라 색이 바뀌는 이모지 바: 🟩(~70%) → 🟨(~90%) → 🟥."""
+    """진행률에 따라 색이 바뀌는 이모지 바: 🟦 → 🟧(75%) → 🟥(90%)."""
     filled = min(EMOJI_CELLS, int(frac * EMOJI_CELLS))
-    fill = "🟥" if frac >= 0.9 else "🟨" if frac >= 0.7 else "🟩"
+    fill = "🟥" if frac >= END else "🟧" if frac >= NEAR else "🟦"
     return fill * filled + "⬛" * (EMOJI_CELLS - filled)
 
 
-def card(t: dict, now: float) -> tuple[str, str, float]:
-    """타이머 하나 → (필드 제목, 필드 내용, 진행률)."""
+def card(t: dict, now: float) -> tuple[str, float]:
+    """타이머 하나 → (필드 내용, 진행률). 제목은 ### 머리글로 크게 쓴다."""
     frac, remain, _ = progress(t, now)
     nxt = int(now + remain)
-    bell = "  🔔" if t.get("notify") else ""
-    title = f"{t['name']}{bell}"
+    bell = " 🔔" if t.get("notify") else ""
+    name = discord.utils.escape_markdown(t["name"])
     body = (
+        f"### {name}{bell}\n"
         f"{emoji_bar(frac)}\n"
         f"⏳ **{fmt_remain(remain)}** 남음 · **{int(frac * 100)}%**\n"  # 내림: 끝나기 전에 100% 로 안 보이게
         f"🔁 {label_of(t)} · <t:{nxt}:t>"
     )
-    return title, body, frac
+    return body, frac
 
 
 def render(g: dict, now: float) -> list[discord.Embed]:
-    """2열 격자 보드. 필드 25개 제한 때문에 5줄(10개)마다 임베드를 나눈다."""
+    """2열 격자 보드. 한 줄(타이머 2개)을 임베드 하나로 만들어 줄 사이 빈 필드를 없앤다(최대 10줄)."""
     timers = g["timers"]
     stamp = datetime.fromtimestamp(now, TZ).strftime("%H:%M:%S")
     footer = f"{len(timers)}/{MAX_TIMERS}개 · {UPDATE_SEC}초마다 갱신 · {stamp}"
@@ -198,26 +206,19 @@ def render(g: dict, now: float) -> list[discord.Embed]:
     cards = [card(t, now) for t in timers]
     soonest = min(range(len(timers)), key=lambda i: progress(timers[i], now)[1])
     s_remain = progress(timers[soonest], now)[1]
-    top = max(c[2] for c in cards)
-    color = 0xED4245 if top >= 0.9 else 0xFEE75C if top >= 0.7 else 0x57F287
 
-    per_embed = COLUMNS * ROWS_PER_EMBED
     embeds = []
-    for start in range(0, len(cards), per_embed):
-        chunk = cards[start:start + per_embed]
-        e = discord.Embed(color=color)
-        if start == 0:
+    for i in range(0, len(cards), COLUMNS):
+        row = cards[i:i + COLUMNS]
+        e = discord.Embed(color=level_color(max(f for _, f in row)))
+        if i == 0:
             e.title = "⏱ 스케줄 타이머"
             name = discord.utils.escape_markdown(timers[soonest]["name"])
-            e.description = f"⏭ 다음 차례 **{name}** · <t:{int(now + s_remain)}:R>\n{BLANK}"
-        for i in range(0, len(chunk), COLUMNS):
-            row = chunk[i:i + COLUMNS]
-            for title, body, _ in row:
-                e.add_field(name=title, value=body, inline=True)
-            for _ in range(COLUMNS - len(row)):  # 홀수 개면 빈 칸으로 2열 유지
-                e.add_field(name=BLANK, value=BLANK, inline=True)
-            if i + COLUMNS < len(chunk):  # 줄바꿈용 빈 필드 → 한 줄에 2개씩
-                e.add_field(name=BLANK, value=BLANK, inline=False)
+            e.description = f"⏭ 다음 차례 **{name}** · <t:{int(now + s_remain)}:R>"
+        for body, _ in row:
+            e.add_field(name=BLANK, value=body, inline=True)
+        for _ in range(COLUMNS - len(row)):  # 홀수 개면 빈 칸으로 2열 유지
+            e.add_field(name=BLANK, value=BLANK, inline=True)
         embeds.append(e)
     embeds[-1].set_footer(text=footer)
     return embeds
