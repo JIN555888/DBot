@@ -12,8 +12,8 @@ OUT="${DEPLOY_DIR:-$HOME/.dbot-deploy}"
 case "$OUT" in ""|/|"$HOME"|"$REPO") echo "[deploy] 위험한 DEPLOY_DIR: $OUT"; exit 1;; esac
 mkdir -p "$OUT"
 find "$OUT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-git -C "$REPO" archive HEAD -- bot.py requirements.txt | tar -x -C "$OUT"
-git -C "$REPO" rev-parse --short HEAD > "$OUT/version.txt"   # 보드 꼬리말 v<해시>
+git -C "$REPO" archive HEAD -- bot.py requirements.txt | tar -x -C "$OUT"   # bot.py 의 버전 자리를 해시로 채움(export-subst)
+grep -q '^_VER = "\$Format' "$OUT/bot.py" && { echo "[deploy] 버전 치환 실패(.gitattributes 확인)"; exit 1; }
 echo "[deploy] $(git -C "$REPO" log --oneline -1) → $OUT"
 ls "$OUT"
 

@@ -40,8 +40,10 @@ COLUMNS = 2
 NOTIFY_DELETE_SEC = int(os.environ.get("NOTIFY_DELETE_SEC", "60"))  # 0 이면 알림 메시지를 지우지 않음
 TZ = timezone(timedelta(hours=float(os.environ.get("TZ_HOURS", "9"))))
 STATE_FILE = BASE / "state.json"
-_VER_FILE = BASE / "version.txt"  # deploy.sh 가 커밋 해시를 적는다 → 보드 꼬리말에 보여 패치 반영 여부를 확인
-VERSION = _VER_FILE.read_text(encoding="utf-8").strip() if _VER_FILE.exists() else "dev"
+# git archive(deploy.sh)가 아래 $Format$ 자리를 커밋 해시로 바꾼다(.gitattributes export-subst).
+# 보드 꼬리말에 보여 패치 반영 여부를 확인한다. 따로 파일을 읽지 않으므로 권한 문제로 죽지 않는다.
+_VER = "$Format:%h$"
+VERSION = "dev" if _VER.startswith("$") else _VER
 MIN_PERIOD = 10
 
 # ---------------------------------------------------------------- 시간 파싱/표시
